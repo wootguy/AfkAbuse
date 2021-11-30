@@ -2,25 +2,152 @@
 void print(string text) { g_Game.AlertMessage( at_console, text); }
 void println(string text) { print(text + "\n"); }
 
-CCVar@ g_cooldown;
+class Tether {
+	EHandle h_src;
+	EHandle h_dst;
+	float lastPullForce;
+	float lastTwang = 0;
+	float lastPullNoise = 0;
+	
+	Tether() {}
+	
+	Tether(CBaseEntity@ src, CBaseEntity@ dst) {
+		h_src = EHandle(src);
+		h_dst = EHandle(dst);
+	}
 
-class PlayerState
-{
-	array<int> hook_targets;
+	bool isValid() {
+		CBasePlayer@ src = getSrc();
+		CBasePlayer@ dst = getDst();
+		
+		return src !is null && src.IsConnected() and dst !is null && dst.IsConnected() and src.entindex() != dst.entindex();
+	}
+	
+	bool shouldBreak() {
+		CBasePlayer@ src = getSrc();
+		CBasePlayer@ dst = getDst();
+		
+		return !src.IsAlive() or !dst.IsAlive() or g_player_afk[dst.entindex()] == 0;
+	}
+	
+	void twangSound() {
+		CBasePlayer@ src = getSrc();
+		CBasePlayer@ dst = getDst();
+		
+		lastTwang = g_Engine.time;
+		g_SoundSystem.PlaySound(src.edict(), CHAN_VOICE, twang_snd, 1.0f, 0.8f, 0, Math.RandomLong(75, 85), 0, true, src.pev.origin);
+		g_SoundSystem.PlaySound(dst.edict(), CHAN_VOICE, twang_snd, 1.0f, 0.8f, 0, Math.RandomLong(75, 85), 0, true, dst.pev.origin);
+	}
+	
+	void snap() {
+		CBasePlayer@ src = getSrc();
+		CBasePlayer@ dst = getDst();
+		
+		CBaseEntity@ world = g_EntityFuncs.Instance(0);
+		
+		if (src !is null) {
+			g_SoundSystem.PlaySound(src.edict(), CHAN_VOICE, snap_snd, 1.0f, 0.8f, 0, Math.RandomLong(95, 105), 0, true, src.pev.origin);
+			src.TakeDamage(world.pev, world.pev, 20, DMG_CLUB | DMG_ALWAYSGIB);
+			te_killbeam(src);
+		}
+		if (dst !is null) {
+			g_SoundSystem.PlaySound(dst.edict(), CHAN_VOICE, snap_snd, 1.0f, 0.8f, 0, Math.RandomLong(95, 105), 0, true, dst.pev.origin);
+			dst.TakeDamage(world.pev, world.pev, 20, DMG_CLUB | DMG_ALWAYSGIB);
+		}
+		
+		if (src !is null and dst !is null) {
+			te_tracer(dst.pev.origin, src.pev.origin);
+			te_tracer(src.pev.origin, dst.pev.origin);
+		}
+	}
+	
+	CBasePlayer@ getSrc() {
+		return cast<CBasePlayer@>(h_src.GetEntity());
+	}
+	
+	CBasePlayer@ getDst() {
+		return cast<CBasePlayer@>(h_dst.GetEntity());
+	}
+	
+	void delete() {
+		h_src = null;
+		h_dst = null;
+	}
+	
+	bool isHooked(CBaseEntity@ plr) {
+		if (!isValid()) {
+			return false;
+		}
+		
+		return plr.entindex() == getSrc().entindex() || plr.entindex() == getDst().entindex();
+	}
 }
 
-array<PlayerState> g_states(33);
+Tether@ getTether(CBaseEntity@ p1, CBaseEntity@ p2) {
+	for (uint i = 0; i < g_tethers.size(); i++) {
+		Tether@ t = g_tethers[i];
+		
+		if (t.isHooked(p1) && t.isHooked(p2)) {
+			return t;
+		}
+	}
+	
+	return null;
+}
+
+float TETHER_MIN_DIST = 128; // minumum distance before tether forces are applied
+float TETHER_MAX_DIST = 1024; // max tether distance before snapping
+int MAX_TETHERS = 64;
+array<Tether> g_tethers;
+array<int> g_player_afk(33);
+
+string stretch_snd = "as_tether/stretch.wav";
+string twang_snd = "as_tether/twang.wav";
+string snap_snd = "as_tether/snap.wav";
 
 void PluginInit() {
 	g_Module.ScriptInfo.SetAuthor( "w00tguy" );
 	g_Module.ScriptInfo.SetContactInfo( "github" );
 	
 	g_Hooks.RegisterHook( Hooks::Player::PlayerUse, @PlayerUse );
-	g_Hooks.RegisterHook( Hooks::Player::PlayerPreThink, @PlayerPreThink );
-	g_Hooks.RegisterHook( Hooks::Player::ClientSay, @ClientSay );
 	g_Hooks.RegisterHook( Hooks::Player::PlayerTakeDamage, @PlayerTakeDamage );
 	
-	@g_cooldown = CCVar("cooldown", 0.6f, "Time before a swapped player can be swapped with again", ConCommandFlag::AdminOnly);
+	g_Scheduler.SetInterval("tether_logic", 0.02f, -1);
+	g_Scheduler.SetInterval("loadCrossPluginAfkState", 1.0f, -1);
+}
+
+void MapInit() {
+	g_SoundSystem.PrecacheSound(stretch_snd);
+	g_Game.PrecacheGeneric("sound/" + stretch_snd);
+	
+	g_SoundSystem.PrecacheSound(twang_snd);
+	g_Game.PrecacheGeneric("sound/" + twang_snd);
+	
+	g_SoundSystem.PrecacheSound(snap_snd);
+	g_Game.PrecacheGeneric("sound/" + snap_snd);
+	
+	g_Game.PrecacheModel("sprites/rope.spr");
+	g_tethers.resize(0);
+	g_player_afk.resize(0);
+	g_player_afk.resize(33);
+}
+
+void loadCrossPluginAfkState() {
+	CBaseEntity@ afkEnt = g_EntityFuncs.FindEntityByTargetname(null, "PlayerStatusPlugin");
+	
+	if (afkEnt is null) {
+		return;
+	}
+	
+	CustomKeyvalues@ customKeys = afkEnt.GetCustomKeyvalues();
+	
+	for ( int i = 1; i <= g_Engine.maxClients; i++ )
+	{
+		CustomKeyvalue key = customKeys.GetKeyvalue("$i_afk" + i);
+		if (key.Exists()) {
+			g_player_afk[i] = key.GetInteger();
+		} 
+	}
 }
 
 Vector getSwapDir(CBasePlayer@ plr) {
@@ -107,8 +234,7 @@ CBaseEntity@ getBestTarget(CBasePlayer@ plr, Vector swapDir) {
 	return bestIdx != -1 ? targets[bestIdx] : null;
 }
 
-class Color
-{ 
+class Color { 
 	uint8 r, g, b, a;
 	
 	Color() { r = g = b = a = 0; }
@@ -125,8 +251,7 @@ void te_beaments(CBaseEntity@ start, CBaseEntity@ end,
 	string sprite="sprites/laserbeam.spr", int frameStart=0, 
 	int frameRate=100, int life=10, int width=32, int noise=1, 
 	Color c=PURPLE, int scroll=32,
-	NetworkMessageDest msgType=MSG_BROADCAST, edict_t@ dest=null)
-{
+	NetworkMessageDest msgType=MSG_BROADCAST, edict_t@ dest=null) {
 	NetworkMessage m(msgType, NetworkMessages::SVC_TEMPENTITY, dest);
 	m.WriteByte(TE_BEAMENTS);
 	m.WriteShort(start.entindex());
@@ -145,8 +270,22 @@ void te_beaments(CBaseEntity@ start, CBaseEntity@ end,
 	m.End();
 }
 
+void te_tracer(Vector start, Vector end, 
+	NetworkMessageDest msgType=MSG_BROADCAST, edict_t@ dest=null)
+{
+	NetworkMessage m(msgType, NetworkMessages::SVC_TEMPENTITY, dest);
+	m.WriteByte(TE_TRACER);
+	m.WriteCoord(start.x);
+	m.WriteCoord(start.y);
+	m.WriteCoord(start.z);
+	m.WriteCoord(end.x);
+	m.WriteCoord(end.y);
+	m.WriteCoord(end.z);
+	m.End();
+}
+
 HookReturnCode PlayerUse( CBasePlayer@ plr, uint& out uiFlags ) {	
-	if (plr.m_afButtonLast & IN_RELOAD == 0) {
+	if (plr.m_afButtonPressed & IN_RELOAD == 0) {
 		return HOOK_CONTINUE;
 	}
 	
@@ -157,199 +296,165 @@ HookReturnCode PlayerUse( CBasePlayer@ plr, uint& out uiFlags ) {
 		return HOOK_CONTINUE;
 	}
 	
-	PlayerState@ state = g_states[plr.entindex()];
+	Tether@ existingTether = getTether(plr, target);
 	
-	for (uint i = 0; i < state.hook_targets.size(); i++) {
-		if (state.hook_targets[i] == target.entindex()) {
+	if (existingTether !is null) {
+		existingTether.delete();
+		g_SoundSystem.PlaySound(plr.edict(), CHAN_VOICE, "weapons/bgrapple_release.wav", 1.0f, 0.8f, 0, 150, 0, true, plr.pev.origin);
+	} else {
+		if (int(g_tethers.size()) >= MAX_TETHERS) {
+			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Too many tethers are active!\n");
 			return HOOK_CONTINUE;
 		}
+		if (g_player_afk[target.entindex()] == 0) {
+			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Only AFK players can be abused.\n");
+			return HOOK_CONTINUE;
+		}
+		g_tethers.insertLast(Tether(plr, target));
+		g_SoundSystem.PlaySound(plr.edict(), CHAN_VOICE, "weapons/bgrapple_fire.wav", 1.0f, 0.8f, 0, 150, 0, true, plr.pev.origin);
 	}
 	
-	state.hook_targets.insertLast(target.entindex());
-	println("NEW HOOK");
-	
-	//uiFlags |= PlrHook_SkipUse;
-	
 	return HOOK_CONTINUE;
 }
 
-HookReturnCode PlayerPreThink(CBasePlayer@ plr, uint& out) {
-	hook_logic(plr);
-
-	return HOOK_CONTINUE;
-}
-
-HookReturnCode PlayerTakeDamage(DamageInfo@ info)
-{
+HookReturnCode PlayerTakeDamage(DamageInfo@ info) {
 	CBasePlayer@ victim = cast<CBasePlayer@>(g_EntityFuncs.Instance(info.pVictim.pev));
 	CBaseEntity@ attacker = @info.pAttacker;
 	
-	if (attacker !is null && attacker.IsPlayer()) {		
+	if (g_player_afk[victim.entindex()] > 0 and attacker !is null && attacker.IsPlayer()) {		
 		g_EngineFuncs.MakeVectors(attacker.pev.v_angle);
-		victim.pev.velocity = g_Engine.v_forward*10*info.flDamage;
+		victim.pev.velocity = victim.pev.velocity + g_Engine.v_forward*20*Math.max(20, info.flDamage);
+		unstick_from_ground(victim);
 	}
 	
 	return HOOK_CONTINUE;
 }
 
-void te_bubbles(Vector mins, Vector maxs, float height=256.0f, 
-	string sprite="sprites/bubble.spr", uint8 count=64, float speed=16.0f,
+void unstick_from_ground(CBasePlayer@ plr) {
+	if (plr.pev.velocity.z > 10 && plr.pev.flags & FL_ONGROUND != 0) {
+		// check if moving up would get player stuck in something
+		TraceResult tr;
+		HULL_NUMBER hullType = plr.pev.flags & FL_DUCKING != 0 ? head_hull : human_hull;
+		Vector pos = plr.pev.origin;
+		g_Utility.TraceHull( pos, pos + Vector(0,0,2), dont_ignore_monsters, hullType, null, tr );
+		
+		if (tr.flFraction >= 1.0f) {
+			plr.pev.origin.z += 2;
+		}
+	}
+}
+
+void apply_vel(CBasePlayer@ target, Vector addVel) {
+	target.pev.velocity = target.pev.velocity + addVel;
+	
+	unstick_from_ground(target);
+	
+	if (target.IsOnLadder()) {
+		int oldPressed = target.m_afButtonPressed;
+	
+		// run movement code so player jumps off ladder, otherwise player gets stuck.
+		g_EngineFuncs.RunPlayerMove( target.edict(), target.pev.angles, 
+			target.pev.velocity.x, target.pev.velocity.y, target.pev.velocity.z, 
+			target.pev.button | IN_JUMP, target.pev.impulse, uint8( 10 ) );
+		
+		// prevent afk checking plugin detecting this as coming back from AFK
+		target.m_afButtonPressed = oldPressed;
+		
+		target.pev.velocity.z = 250;
+	}
+}
+
+void te_killbeam(CBaseEntity@ target, 
 	NetworkMessageDest msgType=MSG_BROADCAST, edict_t@ dest=null)
 {
 	NetworkMessage m(msgType, NetworkMessages::SVC_TEMPENTITY, dest);
-	m.WriteByte(TE_BUBBLES);
-	m.WriteCoord(mins.x);
-	m.WriteCoord(mins.y);
-	m.WriteCoord(mins.z);
-	m.WriteCoord(maxs.x);
-	m.WriteCoord(maxs.y);
-	m.WriteCoord(maxs.z);
-	m.WriteCoord(height);
-	m.WriteShort(g_EngineFuncs.ModelIndex(sprite));
-	m.WriteByte(count);
-	m.WriteCoord(speed);
+	m.WriteByte(TE_KILLBEAM);
+	m.WriteShort(target.entindex());
 	m.End();
 }
 
-void music_notes(EHandle h_plr, bool flip) {
-	CBaseEntity@ ent = h_plr;
-	if (ent is null) {
-		return;
-	}
-	
-	g_EngineFuncs.MakeVectors(ent.pev.v_angle);
-	Vector headPos = ent.pev.origin + ent.pev.view_ofs;
-	Vector leftEar = headPos - g_Engine.v_right*6;
-	Vector rightEar = headPos + g_Engine.v_right*6;
-	
-	
-	//te_playersprites(plr, "sprites/bubble.spr", 1);
-	//te_fizz(plr, "sprites/bubble.spr", 1);
-	if (flip)
-		te_bubbles(leftEar, leftEar, 256, "sprites/bubble.spr", 1, 16);
-	else
-		te_bubbles(rightEar, rightEar, 256, "sprites/bubble.spr", 1, 16);
-	
-	g_Scheduler.SetTimeout("music_notes", 0.05, h_plr, !flip);
-}
+int thinkCount = 0;
 
-void apply_vel(CBasePlayer@ target, Vector addVel, bool shouldDuck) {
-	target.pev.velocity = target.pev.velocity + addVel;
-	if (target.pev.velocity.z > 10 && target.pev.flags & FL_ONGROUND != 0) {
-		target.pev.origin.z += 1;
-	}	
-	
-	
-	if (target.IsOnLadder()) {
-		target.pev.button |= IN_JUMP;
-		g_EngineFuncs.RunPlayerMove( target.edict(), target.pev.angles, 
-			target.pev.velocity.x, target.pev.velocity.y, target.pev.velocity.z, 
-			target.pev.button, target.pev.impulse, uint8( 1 ) );
+void tether_logic() {		
+	for (int k = 0; k < int(g_tethers.size()); k++) {
+		Tether@ tether = g_tethers[k];
 		
-		if (target.pev.velocity.z < 0) {
-			target.pev.velocity.z += 200;
-		}
-		
-		println("JUMP NIGGA");
-	}
-	if (shouldDuck) {
-			
-		//target.pev.flags |= FL_DUCKING;
-		//target.pev.flDuckTime = 26;
-		//target.pev.origin.z -= 18;
-		//target.Duck();
-		target.pev.button |= IN_DUCK;
-		target.m_afButtonLast |= IN_DUCK;
-		/*
-		g_EngineFuncs.RunPlayerMove( target.edict(), target.pev.angles, 
-				target.pev.velocity.x, target.pev.velocity.y, target.pev.velocity.z, 
-				target.pev.button, target.pev.impulse, uint8( 1 ) );
-				*/
-			
-		println("DUCK NIGGA " + target.pev.flDuckTime);
-	}
-}
-
-void hook_logic(CBasePlayer@ plr) {
-	PlayerState@ state = g_states[plr.entindex()];
-		
-	for (int k = 0; k < int(state.hook_targets.size()); k++) {
-		CBasePlayer@ target = g_PlayerFuncs.FindPlayerByIndex(state.hook_targets[k]);
-		
-		if (target is null or !target.IsAlive()) {
-			state.hook_targets.removeAt(k);
+		if (!tether.isValid()) {		
+			g_tethers.removeAt(k);
 			k--;
 			continue;
 		}
+	
+		CBasePlayer@ src = tether.getSrc();
+		CBasePlayer@ dst = tether.getDst();
 		
-		Vector delta = plr.pev.origin - target.pev.origin;
-		float dist = delta.Length() - 64;
+		Vector delta = src.pev.origin - dst.pev.origin;
+		float dist = delta.Length();
+		float pullForce = dist - TETHER_MIN_DIST;
 		
-		if (dist < 0) {
-			dist = 0;
+		if (pullForce < 0) {
+			pullForce = 0;
+		}
+		
+		if (dist > TETHER_MAX_DIST) {
+			tether.snap();
+			tether.delete();
+			continue;
 		}
 		
 		Vector dir = delta.Normalize();
 		
-		te_beaments(plr, target, "sprites/laserbeam.spr", 0, 100, 1, 8, 0, Color(0, 255, 255, 128), 32);
+		float strainMin = TETHER_MAX_DIST*0.3f;
+		float prc = Math.max(0.0f, Math.min(1.0f, (dist-strainMin) / (TETHER_MAX_DIST-strainMin)));
+		int r = int(prc*255);
+		Color c = Color(255, 200 - int(prc*150), 200 - int(prc*150), 255);
 		
-		Vector addVel = dir * (dist*10.0f*g_Engine.frametime);
-		bool shouldDuck = plr.pev.flags & FL_DUCKING != 0;
-		apply_vel(target, addVel, shouldDuck);
-		//apply_vel(plr, addVel*-0.1f);
+		if (thinkCount % 16 == 0) {
+			bool wiggle = g_Engine.time - tether.lastTwang < 0.5f;
+			te_beaments(src, dst, "sprites/rope.spr", 0, 0, 4, 12-int(prc*6), wiggle ? 16 : 0, c, 0);
+		}
+		
+		if (tether.shouldBreak()) {
+			if (dist > TETHER_MAX_DIST*0.9f) {
+				tether.snap();
+			} else {
+				tether.twangSound();
+			}
+			
+			if (g_player_afk[dst.entindex()] == 0) {
+				g_PlayerFuncs.ClientPrint(src, HUD_PRINTCENTER, "" + dst.pev.netname + " woke up!\n");
+			}
+			
+			te_killbeam(src);
+			te_tracer(dst.pev.origin, src.pev.origin);
+			te_tracer(src.pev.origin, dst.pev.origin);
+			tether.delete();
+		}
+		
+		bool pullNoise = dist > strainMin and pullForce > tether.lastPullForce;
+		
+		if (pullNoise and g_Engine.time - tether.lastPullNoise > 0.05f and g_Engine.time - tether.lastTwang > 0.5f) {
+			int p = 30 + int(prc*10);
+			float vol = Math.min(1.0f, prc)*0.8f;
+			g_SoundSystem.PlaySound(src.edict(), CHAN_VOICE, stretch_snd, vol, 0.8f, 0, p, 0, true, src.pev.origin);
+			g_SoundSystem.PlaySound(dst.edict(), CHAN_VOICE, stretch_snd, vol, 0.8f, 0, p, 0, true, dst.pev.origin); 
+			tether.lastPullNoise = g_Engine.time;
+		}
+		
+		if (pullForce > strainMin and (pullForce - tether.lastPullForce) < -16 and g_Engine.time - tether.lastTwang > 0.5f) {
+			tether.twangSound();
+			te_killbeam(src);
+			te_beaments(src, dst, "sprites/rope.spr", 0, 0, 2, 12, 16, c, 0);
+		}
+		
+		tether.lastPullForce = pullForce;
+		
+		Vector addVel = dir * (pullForce*100.0f*g_Engine.frametime);
+		apply_vel(dst, addVel);
+		//apply_vel(src, addVel*-0.1f);
 		
 		//println("PULL " + dist + " = " + addVel.ToString() + " " + g_Engine.frametime);
 	}
-}
-
-bool doCommand(CBasePlayer@ plr, const CCommand@ args)
-{	
-	if ( args.ArgC() > 0 )
-	{
-		if ( args[0] == ".afkabuse" )
-		{
-			g_PlayerFuncs.SayText(plr, "WOWWWWOWOW\n");			
-			return true;
-		}
-		if (args[0] == 'd') {
-		
-			CBaseEntity@ ent = null;
-			do {
-				@ent = g_EntityFuncs.FindEntityByClassname(ent, "info_target"); 
-				if (ent !is null)
-				{
-					if (@ent.pev.aiment == @plr.edict() && string(ent.pev.model).Find("hat") != String::INVALID_INDEX) {
-						break;
-					}
-				}
-			} while (ent !is null);
-		
-			music_notes(EHandle(plr), false);
-			
-			return true;
-		}
-	}
-	return false;
-}
-
-HookReturnCode ClientSay( SayParameters@ pParams )
-{	
-	CBasePlayer@ plr = pParams.GetPlayer();
-	const CCommand@ args = pParams.GetArguments();
 	
-	if (doCommand(plr, args))
-	{
-		pParams.ShouldHide = true;
-		return HOOK_HANDLED;
-	}
-	
-	return HOOK_CONTINUE;
-}
-
-CClientCommand _antiblock("pickup", "Anti-rush status", @consoleCmd );
-
-void consoleCmd( const CCommand@ args )
-{
-	CBasePlayer@ plr = g_ConCommandSystem.GetCurrentPlayer();
-	doCommand(plr, args);
+	thinkCount++;
 }
