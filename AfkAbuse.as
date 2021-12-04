@@ -35,8 +35,8 @@ class Tether {
 		CBasePlayer@ dst = getDst();
 		
 		lastTwang = g_Engine.time;
-		g_SoundSystem.PlaySound(src.edict(), CHAN_VOICE, twang_snd, 1.0f, 0.8f, 0, Math.RandomLong(75, 85), 0, true, src.pev.origin);
-		g_SoundSystem.PlaySound(dst.edict(), CHAN_VOICE, twang_snd, 1.0f, 0.8f, 0, Math.RandomLong(75, 85), 0, true, dst.pev.origin);
+		g_SoundSystem.PlaySound(src.edict(), CHAN_WEAPON, twang_snd, 1.0f, 0.8f, 0, Math.RandomLong(75, 85), 0, true, src.pev.origin);
+		g_SoundSystem.PlaySound(dst.edict(), CHAN_WEAPON, twang_snd, 1.0f, 0.8f, 0, Math.RandomLong(75, 85), 0, true, dst.pev.origin);
 	}
 	
 	void snap() {
@@ -46,12 +46,12 @@ class Tether {
 		CBaseEntity@ world = g_EntityFuncs.Instance(0);
 		
 		if (src !is null) {
-			g_SoundSystem.PlaySound(src.edict(), CHAN_VOICE, snap_snd, 1.0f, 0.8f, 0, Math.RandomLong(95, 105), 0, true, src.pev.origin);
+			g_SoundSystem.PlaySound(src.edict(), CHAN_WEAPON, snap_snd, 1.0f, 0.8f, 0, Math.RandomLong(95, 105), 0, true, src.pev.origin);
 			src.TakeDamage(world.pev, world.pev, 20, DMG_CLUB | DMG_ALWAYSGIB);
 			te_killbeam(src);
 		}
 		if (dst !is null) {
-			g_SoundSystem.PlaySound(dst.edict(), CHAN_VOICE, snap_snd, 1.0f, 0.8f, 0, Math.RandomLong(95, 105), 0, true, dst.pev.origin);
+			g_SoundSystem.PlaySound(dst.edict(), CHAN_WEAPON, snap_snd, 1.0f, 0.8f, 0, Math.RandomLong(95, 105), 0, true, dst.pev.origin);
 			dst.TakeDamage(world.pev, world.pev, 20, DMG_CLUB | DMG_ALWAYSGIB);
 		}
 		
@@ -300,7 +300,7 @@ HookReturnCode PlayerUse( CBasePlayer@ plr, uint& out uiFlags ) {
 	
 	if (existingTether !is null) {
 		existingTether.delete();
-		g_SoundSystem.PlaySound(plr.edict(), CHAN_VOICE, "weapons/bgrapple_release.wav", 1.0f, 0.8f, 0, 150, 0, true, plr.pev.origin);
+		g_SoundSystem.PlaySound(plr.edict(), CHAN_ITEM, "weapons/bgrapple_release.wav", 1.0f, 0.8f, 0, 150, 0, true, plr.pev.origin);
 	} else {
 		if (int(g_tethers.size()) >= MAX_TETHERS) {
 			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Too many tethers are active!\n");
@@ -311,7 +311,7 @@ HookReturnCode PlayerUse( CBasePlayer@ plr, uint& out uiFlags ) {
 			return HOOK_CONTINUE;
 		}
 		g_tethers.insertLast(Tether(plr, target));
-		g_SoundSystem.PlaySound(plr.edict(), CHAN_VOICE, "weapons/bgrapple_fire.wav", 1.0f, 0.8f, 0, 150, 0, true, plr.pev.origin);
+		g_SoundSystem.PlaySound(plr.edict(), CHAN_ITEM, "weapons/bgrapple_fire.wav", 1.0f, 0.8f, 0, 150, 0, true, plr.pev.origin);
 	}
 	
 	return HOOK_CONTINUE;
@@ -344,7 +344,7 @@ void unstick_from_ground(CBasePlayer@ plr) {
 	}
 }
 
-void apply_vel(CBasePlayer@ target, Vector addVel) {
+void apply_vel(CBasePlayer@ target, Vector addVel, bool shouldLadderBoost) {
 	target.pev.velocity = target.pev.velocity + addVel;
 	
 	unstick_from_ground(target);
@@ -360,7 +360,8 @@ void apply_vel(CBasePlayer@ target, Vector addVel) {
 		// prevent afk checking plugin detecting this as coming back from AFK
 		target.m_afButtonPressed = oldPressed;
 		
-		target.pev.velocity.z = 250;
+		if (shouldLadderBoost)
+			target.pev.velocity.z = 250;
 	}
 }
 
@@ -436,8 +437,8 @@ void tether_logic() {
 		if (pullNoise and g_Engine.time - tether.lastPullNoise > 0.05f and g_Engine.time - tether.lastTwang > 0.5f) {
 			int p = 30 + int(prc*10);
 			float vol = Math.min(1.0f, prc)*0.8f;
-			g_SoundSystem.PlaySound(src.edict(), CHAN_VOICE, stretch_snd, vol, 0.8f, 0, p, 0, true, src.pev.origin);
-			g_SoundSystem.PlaySound(dst.edict(), CHAN_VOICE, stretch_snd, vol, 0.8f, 0, p, 0, true, dst.pev.origin); 
+			g_SoundSystem.PlaySound(src.edict(), CHAN_ITEM, stretch_snd, vol, 0.8f, 0, p, 0, true, src.pev.origin);
+			g_SoundSystem.PlaySound(dst.edict(), CHAN_ITEM, stretch_snd, vol, 0.8f, 0, p, 0, true, dst.pev.origin); 
 			tether.lastPullNoise = g_Engine.time;
 		}
 		
@@ -450,7 +451,7 @@ void tether_logic() {
 		tether.lastPullForce = pullForce;
 		
 		Vector addVel = dir * (pullForce*100.0f*g_Engine.frametime);
-		apply_vel(dst, addVel);
+		apply_vel(dst, addVel, dst.pev.origin.z < src.pev.origin.z);
 		//apply_vel(src, addVel*-0.1f);
 		
 		//println("PULL " + dist + " = " + addVel.ToString() + " " + g_Engine.frametime);
