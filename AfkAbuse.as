@@ -100,10 +100,16 @@ float TETHER_MAX_DIST = 1024; // max tether distance before snapping
 int MAX_TETHERS = 64;
 array<Tether> g_tethers;
 array<int> g_player_afk(33);
+array<float> g_lastTetherAttempt(33); // last time a player attempted a grab (used to prevent messages showing on accident)
+bool g_disabled = false;
 
 string stretch_snd = "as_tether/stretch.wav";
 string twang_snd = "as_tether/twang.wav";
 string snap_snd = "as_tether/snap.wav";
+
+dictionary g_disabled_maps = {
+	{"minigolf3", true}
+};
 
 void PluginInit() {
 	g_Module.ScriptInfo.SetAuthor( "w00tguy" );
@@ -114,6 +120,8 @@ void PluginInit() {
 	
 	g_Scheduler.SetInterval("tether_logic", 0.02f, -1);
 	g_Scheduler.SetInterval("loadCrossPluginAfkState", 1.0f, -1);
+	
+	g_disabled = g_disabled_maps.exists(g_Engine.mapname);
 }
 
 void MapInit() {
@@ -130,6 +138,10 @@ void MapInit() {
 	g_tethers.resize(0);
 	g_player_afk.resize(0);
 	g_player_afk.resize(33);
+	g_lastTetherAttempt.resize(0);
+	g_lastTetherAttempt.resize(33);
+	
+	g_disabled = g_disabled_maps.exists(g_Engine.mapname);
 }
 
 void loadCrossPluginAfkState() {
@@ -302,12 +314,22 @@ HookReturnCode PlayerUse( CBasePlayer@ plr, uint& out uiFlags ) {
 		existingTether.delete();
 		g_SoundSystem.PlaySound(plr.edict(), CHAN_ITEM, "weapons/bgrapple_release.wav", 1.0f, 0.8f, 0, 150, 0, true, plr.pev.origin);
 	} else {
+		bool shouldShowMessage = (g_Engine.time - g_lastTetherAttempt[plr.entindex()]) < 1.0f;
+		g_lastTetherAttempt[plr.entindex()] = g_Engine.time;
+		
 		if (int(g_tethers.size()) >= MAX_TETHERS) {
-			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Too many tethers are active!\n");
+			if (shouldShowMessage)
+				g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Too many tethers are active!\n");
 			return HOOK_CONTINUE;
 		}
 		if (g_player_afk[target.entindex()] == 0) {
-			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Only AFK players can be abused.\n");
+			if (shouldShowMessage)
+				g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Only AFK players can be abused.\n");
+			return HOOK_CONTINUE;
+		}
+		if (g_disabled) {
+			if (shouldShowMessage)
+				g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "AFK abuse disabled on this map.\n");
 			return HOOK_CONTINUE;
 		}
 		g_tethers.insertLast(Tether(plr, target));
@@ -319,11 +341,30 @@ HookReturnCode PlayerUse( CBasePlayer@ plr, uint& out uiFlags ) {
 
 HookReturnCode PlayerTakeDamage(DamageInfo@ info) {
 	CBasePlayer@ victim = cast<CBasePlayer@>(g_EntityFuncs.Instance(info.pVictim.pev));
-	CBaseEntity@ attacker = @info.pAttacker;
+	CBaseEntity@ inflictor = @info.pInflictor;
 	
-	if (g_player_afk[victim.entindex()] > 0 and attacker !is null && attacker.IsPlayer()) {		
-		g_EngineFuncs.MakeVectors(attacker.pev.v_angle);
-		victim.pev.velocity = victim.pev.velocity + g_Engine.v_forward*20*Math.max(20, info.flDamage);
+	if (g_disabled) {
+		return HOOK_CONTINUE;
+	}
+	
+	if (!inflictor.IsPlayer()) {
+		CBaseEntity@ owner = g_EntityFuncs.Instance(inflictor.pev.owner);
+		if (owner is null or !owner.IsPlayer()) {
+			return HOOK_CONTINUE; // don't get pushed by monster projectiles
+		}
+	}
+	
+	if (g_player_afk[victim.entindex()] > 0) {
+		Vector pushDir;
+		
+		if (inflictor.IsPlayer()) {
+			g_EngineFuncs.MakeVectors(inflictor.pev.v_angle);
+			pushDir = g_Engine.v_forward;
+		} else {
+			pushDir = (victim.pev.origin - inflictor.pev.origin).Normalize();
+		}
+		
+		victim.pev.velocity = victim.pev.velocity + pushDir*20*Math.max(20, info.flDamage);
 		unstick_from_ground(victim);
 	}
 	
