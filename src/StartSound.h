@@ -48,9 +48,3 @@ extern std::map<std::string, int> g_SoundCache;
 
 // call in MapInit_post
 void loadSoundCacheFile(int attempts = 5);
-
-// sven has a special version of PrecacheSound, but metamod only has access to the engine func.
-// This requires the MetaHelper angelscript plugin to be installed.
-// Do not call this outside of MapInit/ServerActivate.
-// This also includes the PrecacheGeneric call
-void PrecacheSound(std::string snd);

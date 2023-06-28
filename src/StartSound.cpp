@@ -11,13 +11,15 @@ void StartSoundMsg::send(int msg_dest, edict_t* target) {
 		WRITE_SHORT(entindex);
 	}
 	if (flags & SND_VOLUME) {
-		WRITE_BYTE(clamp(int(volume * 255), 0, 255));
+		uint8_t vol = clamp(int(volume * 255), 0, 255);
+		WRITE_BYTE(vol);
 	}
 	if (flags & SND_PITCH) {
 		WRITE_BYTE(pitch);
 	}
 	if (flags & SND_ATTENUATION) {
-		WRITE_BYTE(clamp(int(attenuation * 64), 0, 255));
+		uint8_t attn = clamp(int(attenuation * 64), 0, 255);
+		WRITE_BYTE(attn);
 	}
 	if (flags & SND_ORIGIN) {
 		WRITE_COORD(origin.x);
@@ -58,12 +60,30 @@ void PlaySound(edict_t* entity, int channel, const std::string& sample, float vo
 		msg.flags |= SND_ENT;
 	}
 	if (setOrigin) {
+		// sven always writes an origin but that seems wasteful when a tracked entity is given
 		msg.flags |= SND_ORIGIN;
 	}
 	if (pitch != PITCH_NORM) {
 		msg.flags |= SND_PITCH;
 	}
-	msg.flags |= SND_ATTENUATION; // TODO: make this conditional. idk what the default value is
+	if (volume != VOL_NORM) {
+		msg.flags |= SND_VOLUME;
+	}
+	if (attenuation != ATTN_NORM) {
+		msg.flags |= SND_ATTENUATION;
+	}
+
+	// set an origin on the sound if the emitting entity is not networked to clients.
+	// this has the side effect of allowing overlapping sounds on the same channel
+	// and the sound won't follow the entity's origin as it plays.
+	// This seems to be what the sven version of PlaySound does (tested with gibme and observer mode).
+	bool fakeAttachment = entity && entity->v.effects & EF_NODRAW;
+
+	if (fakeAttachment && !setOrigin) {
+		msg.flags &= ~SND_ENT;
+		msg.flags |= SND_ORIGIN;
+		msg.origin = entity->v.origin;
+	}
 	
 	if (target) {
 		msg.send(MSG_ONE_UNRELIABLE, target);
@@ -120,9 +140,4 @@ void loadSoundCacheFile(int attempts) {
 	fclose(file);
 
 	println("[SoundCache] Parsed %d sounds", g_SoundCache.size());
-}
-
-void PrecacheSound(string snd) {
-	g_engfuncs.pfnServerCommand((char*)("as_command .PrecacheSound " + snd + ";").c_str());
-	g_engfuncs.pfnServerExecute();
 }

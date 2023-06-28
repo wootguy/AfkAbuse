@@ -27,13 +27,17 @@ plugin_info_t Plugin_info = {
 float TETHER_MIN_DIST = 128; // minumum distance before tether forces are applied
 float TETHER_MAX_DIST = 1024; // max tether distance before snapping
 int MAX_TETHERS = 64;
-vector<int> g_player_afk(33);
+uint32_t g_player_afk; // bit set = player is afk tier1 or higher
 vector<float> g_lastTetherAttempt(33); // last time a player attempted a grab (used to prevent messages showing on accident)
 bool g_disabled = false;
 
 string stretch_snd = "as_tether/stretch.wav";
 string twang_snd = "as_tether/twang.wav";
 string snap_snd = "as_tether/snap.wav";
+
+bool isAfk(int entIndex) {
+	return g_player_afk & (1 << (entIndex & 31));
+}
 
 class Tether {
 public:
@@ -61,7 +65,7 @@ public:
 		CBasePlayer* src = getSrc();
 		CBasePlayer* dst = getDst();
 
-		return !src->IsAlive() || !dst->IsAlive() || g_player_afk[dst->entindex()] == 0;
+		return !src->IsAlive() || !dst->IsAlive() || !isAfk(dst->entindex());
 	}
 
 	void twangSound() {
@@ -140,18 +144,11 @@ set<string> g_disabled_maps = {
 void loadCrossPluginAfkState() {
 	edict_t* afkEnt = g_engfuncs.pfnFindEntityByString(NULL, "targetname", "PlayerStatusPlugin");
 
-	if (!afkEnt) {
+	if (!afkEnt || afkEnt->free) {
 		return;
 	}
 
-	static int afkIdx = 1;
-
-	g_player_afk[afkIdx] = readCustomKeyvalueInteger(afkEnt, "$i_afk" + to_string(afkIdx));
-
-	afkIdx++;
-	if (afkIdx > 32) {
-		afkIdx = 1;
-	}
+	g_player_afk = afkEnt->v.renderfx;
 }
 
 Vector getSwapDir(CBasePlayer* plr) {
@@ -267,7 +264,8 @@ void PlayerPostThink(edict_t* ed_plr) {
 				ClientPrint(ed_plr, HUD_PRINTCENTER, "Too many tethers are active!\n");
 			RETURN_META(MRES_IGNORED);
 		}
-		if (g_player_afk[target->entindex()] == 0) {
+
+		if (!isAfk(target->entindex())) {
 			if (shouldShowMessage)
 				ClientPrint(ed_plr, HUD_PRINTCENTER, "Only AFK players can be abused.\n");
 			RETURN_META(MRES_IGNORED);
@@ -323,7 +321,7 @@ void PlayerTakeDamage() {
 		}
 	}
 
-	if (g_player_afk[i_victim] > 0) {
+	if (isAfk(i_victim)) {
 		Vector pushDir;
 
 		if (inflictor->IsPlayer()) {
@@ -409,7 +407,7 @@ void tether_logic() {
 				tether.twangSound();
 			}
 
-			if (g_player_afk[dst->entindex()] == 0) {
+			if (!isAfk(dst->entindex())) {
 				ClientPrint(src->edict(), HUD_PRINTCENTER, (string("") + STRING(dst->pev->netname) + " woke up!\n").c_str());
 			}
 
@@ -455,8 +453,6 @@ void MapInit(edict_t* pEdictList, int edictCount, int maxClients) {
 
 	g_engfuncs.pfnPrecacheModel("sprites/rope.spr");
 	g_tethers.resize(0);
-	g_player_afk.resize(0);
-	g_player_afk.resize(33);
 	g_lastTetherAttempt.resize(0);
 	g_lastTetherAttempt.resize(33);
 
@@ -482,7 +478,7 @@ void PluginInit() {
 	g_dll_hooks.pfnPlayerPostThink = PlayerPostThink;
 
 	g_Scheduler.SetInterval(tether_logic, 0.02f, -1);
-	g_Scheduler.SetInterval(loadCrossPluginAfkState, 0.03125f, -1);
+	g_Scheduler.SetInterval(loadCrossPluginAfkState, 1.0f, -1);
 
 	if (gpGlobals->time > 4) {
 		hook_angelscript("TakeDamage", "TakeDamage_AfkAbuse", PlayerTakeDamage);
