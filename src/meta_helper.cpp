@@ -68,3 +68,24 @@ void TakeDamage(edict_t* victim, edict_t* inflictor, edict_t* attacker, float da
 	g_engfuncs.pfnServerCommand((char*)("as_command .TakeDamage " + args + ";").c_str());
 	g_engfuncs.pfnServerExecute();
 }
+
+void Use(edict_t* target, edict_t* activator, edict_t* caller, int useType) {
+	string s_target = to_string(ENTINDEX(target));
+	string s_activator = to_string(ENTINDEX(activator));
+	string s_caller = to_string(ENTINDEX(caller));
+	string s_useType = to_string(useType);
+	string args = s_target + " " + s_activator + " " + s_caller + " " + s_useType;
+
+	g_engfuncs.pfnServerCommand((char*)("as_command .Use " + args + ";").c_str());
+	g_engfuncs.pfnServerExecute();
+}
+
+void PrecacheSound(string snd) {
+	g_engfuncs.pfnServerCommand((char*)("as_command .PrecacheSound " + snd + ";").c_str());
+	g_engfuncs.pfnServerExecute();
+}
+
+void PrecacheModel(string mdl) {
+	g_engfuncs.pfnServerCommand((char*)("as_command .PrecacheModel " + mdl + ";").c_str());
+	g_engfuncs.pfnServerExecute();
+}

@@ -8,17 +8,17 @@ void Scheduler::Think() {
     float now = g_engfuncs.pfnTime();
 
     for (int i = 0; i < functions.size(); i++) {
-        ScheduledFunction_internal& sched = functions[i];
-
-        if (now - sched.lastCall < sched.delay) {
+        if (now - functions[i].lastCall < functions[i].delay) {
             continue;
         }
 
-        sched.func();
-        sched.lastCall = now;
-        sched.callCount++;
+        // not using a local reference to functions[i] because 'functions' might be updated
+        // as part of this func() call
+        functions[i].func();
+        functions[i].lastCall = now;
+        functions[i].callCount++;
 
-        if (sched.maxCalls >= 0 && sched.callCount >= sched.maxCalls) {
+        if (functions[i].maxCalls >= 0 && functions[i].callCount >= functions[i].maxCalls) {
             functions.erase(functions.begin() + i);
             i--;
         }
