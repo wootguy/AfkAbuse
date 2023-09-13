@@ -8,12 +8,18 @@ class Tether {
 	float lastPullForce;
 	float lastTwang = 0;
 	float lastPullNoise = 0;
+	bool autoFished = false;
 	
 	Tether() {}
 	
 	Tether(CBaseEntity@ src, CBaseEntity@ dst) {
 		h_src = EHandle(src);
 		h_dst = EHandle(dst);
+		
+		if (!dst.IsAlive() && dst.pev.health <= 0) {
+			autoFished = true;
+			dst.pev.health = 1; // convert to a fish
+		}
 	}
 
 	bool isValid() {
@@ -50,7 +56,7 @@ class Tether {
 			src.TakeDamage(world.pev, world.pev, 20, DMG_CLUB | DMG_ALWAYSGIB);
 			te_killbeam(src);
 		}
-		if (dst !is null) {
+		if (dst !is null && !autoFished) {
 			g_SoundSystem.PlaySound(dst.edict(), CHAN_WEAPON, snap_snd, 1.0f, 0.8f, 0, Math.RandomLong(95, 105), 0, true, dst.pev.origin);
 			dst.TakeDamage(world.pev, world.pev, 20, DMG_CLUB | DMG_ALWAYSGIB);
 		}
@@ -70,6 +76,11 @@ class Tether {
 	}
 	
 	void delete() {
+		if (autoFished) {
+			CBasePlayer@ dst = getDst();
+			if (!dst.IsAlive())
+				dst.pev.health = 0;
+		}
 		h_src = null;
 		h_dst = null;
 	}
@@ -261,7 +272,7 @@ CBaseEntity@ getBestTarget(CBasePlayer@ plr, Vector swapDir) {
 			@ent = g_EntityFuncs.FindEntityInSphere(ent, plr.pev.origin, 64, "player", "classname"); 
 			if (ent !is null)
 			{
-				if (ent.entindex() == plr.entindex() or ent.pev.health <= 0 or ent.IsAlive()) {
+				if (ent.entindex() == plr.entindex() or ent.IsAlive()) {
 					continue;
 				}
 				float dist = (ent.pev.origin - plr.pev.origin).Length();
@@ -422,6 +433,9 @@ void apply_vel(CBasePlayer@ target, Vector addVel, bool shouldLadderBoost) {
 	
 	if (target.IsOnLadder()) {
 		int oldPressed = target.m_afButtonPressed;
+		int oldReleased = target.m_afButtonReleased;
+		int oldLast = target.m_afButtonLast;
+		int oldButton = target.pev.button;
 	
 		// run movement code so player jumps off ladder, otherwise player gets stuck.
 		g_EngineFuncs.RunPlayerMove( target.edict(), target.pev.angles, 
@@ -430,6 +444,9 @@ void apply_vel(CBasePlayer@ target, Vector addVel, bool shouldLadderBoost) {
 		
 		// prevent afk checking plugin detecting this as coming back from AFK
 		target.m_afButtonPressed = oldPressed;
+		target.m_afButtonReleased = oldReleased;
+		target.m_afButtonLast = oldLast;
+		target.pev.button = oldButton;
 		
 		if (shouldLadderBoost)
 			target.pev.velocity.z = 250;
