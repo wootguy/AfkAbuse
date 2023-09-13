@@ -27,7 +27,7 @@ class Tether {
 		CBasePlayer@ src = getSrc();
 		CBasePlayer@ dst = getDst();
 		
-		return !src.IsAlive() or !dst.IsAlive() or g_player_afk[dst.entindex()] == 0;
+		return !isValidTetherTarget(src) or !isValidTetherTarget(dst) or (g_player_afk[dst.entindex()] == 0 && dst.IsAlive());
 	}
 	
 	void twangSound() {
@@ -81,6 +81,10 @@ class Tether {
 		
 		return plr.entindex() == getSrc().entindex() || plr.entindex() == getDst().entindex();
 	}
+}
+
+bool isValidTetherTarget(CBasePlayer@ plr) {
+	return (plr.IsAlive() || plr.pev.health > 0) && (plr.pev.effects & EF_NODRAW == 0) && !plr.GetObserver().IsObserver();
 }
 
 Tether@ getTether(CBaseEntity@ p1, CBaseEntity@ p2) {
@@ -243,7 +247,33 @@ CBaseEntity@ getBestTarget(CBasePlayer@ plr, Vector swapDir) {
 		targets[i].pev.solid = SOLID_SLIDEBOX;
 	}
 	
-	return bestIdx != -1 ? targets[bestIdx] : null;
+	if (bestIdx != -1) {
+		return targets[bestIdx];
+	}
+	else {
+		g_EngineFuncs.MakeVectors(plr.pev.v_angle);
+		
+		CBaseEntity@ bestTarget = null;
+		bestDist = 9e99;
+		
+		CBaseEntity@ ent = null;
+		do {
+			@ent = g_EntityFuncs.FindEntityInSphere(ent, plr.pev.origin, 64, "player", "classname"); 
+			if (ent !is null)
+			{
+				if (ent.entindex() == plr.entindex() or ent.pev.health <= 0 or ent.IsAlive()) {
+					continue;
+				}
+				float dist = (ent.pev.origin - plr.pev.origin).Length();
+				if (dist < bestDist) {
+					bestDist = dist;
+					@bestTarget = @ent;
+				}
+			}
+		} while (ent !is null);
+		
+		return bestTarget;
+	}
 }
 
 class Color { 
@@ -322,7 +352,7 @@ HookReturnCode PlayerUse( CBasePlayer@ plr, uint& out uiFlags ) {
 				g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Too many tethers are active!\n");
 			return HOOK_CONTINUE;
 		}
-		if (g_player_afk[target.entindex()] == 0) {
+		if (g_player_afk[target.entindex()] == 0 && target.IsAlive()) {
 			if (shouldShowMessage)
 				g_PlayerFuncs.ClientPrint(plr, HUD_PRINTCENTER, "Only AFK players can be abused.\n");
 			return HOOK_CONTINUE;
@@ -463,7 +493,7 @@ void tether_logic() {
 				tether.twangSound();
 			}
 			
-			if (g_player_afk[dst.entindex()] == 0) {
+			if (g_player_afk[dst.entindex()] == 0 && dst.IsAlive()) {
 				g_PlayerFuncs.ClientPrint(src, HUD_PRINTCENTER, "" + dst.pev.netname + " woke up!\n");
 			}
 			
